@@ -19,7 +19,10 @@ from nqgl.mlutils.components.component_layer.resampler import (
     YResamplingDirections,
     TopKResampling,
     SVDResampling,
+    TopKResamplingConfig,
 )
+
+
 import torch
 import torch.nn as nn
 import tqdm
@@ -28,6 +31,8 @@ from nqgl.mlutils.components.component_layer.freq_tracker import (
     CountingFreqTracker,
     CountingFreqTrackerConfig,
     FreqTracker,
+    EMAFreqTracker,
+    EMAFreqTrackerConfig,
 )
 from nqgl.mlutils.components.cache import Cache
 from unpythonic import box
@@ -47,6 +52,7 @@ class SAEConfig(WandbDynamicConfig):
     freq_tracker_cfg: CountingFreqTrackerConfig = CountingFreqTrackerConfig()
     l1_coeff: float = 1e-3
     device: str = "cuda"
+    start_from_dead: bool = False
 
 
 class SAECache(Cache):
@@ -69,13 +75,14 @@ class SAETrainCache(SAECache):
     l2: torch.NumberType = ...
     y_pred: torch.Tensor = ...
     l2_norm: torch.NumberType = ...
+    num_queued_for_reset: int = ...
 
     # In the future, possibly better to replace these with a component
     @staticmethod
     def process_y(cache, y):
         sumsquares = (cache.y_pred - y).pow(2).sum(-1)
         cache.l2 = sumsquares.mean()
-        cache.l2_norm = (sumsquares + 1e-6).pow(0.5).mean()
+        cache.l2_norm = (cache.y_pred - y).norm(dim=-1).mean()
 
     def __init__(self):
         super().__init__()
@@ -132,7 +139,7 @@ class SAECacheLayer(CacheModule):
         return y_pred
 
     def zero(self, n=0):
-        self.decoder.weight.data[:] = 0.0 + n
+        # self.decoder.weight.data[:] = 0.0 + n
         self.encoder.cachelayer.W.data[:] = 0.0 + n
 
 
@@ -179,17 +186,22 @@ class SAETrainer:
         ).to(cfg.device)
         self.optim = torch.optim.Adam(self.sae.parameters(), lr=cfg.lr, betas=cfg.betas)
         self.t = 1
+        self.extra_calls = []
 
     def train(self, buffer):
         l1_coeff = self.cfg.l1_coeff
         for bn in buffer:
+            if self.t % 4000 == 1:
+                for call in self.extra_calls:
+                    call()
             # if self.t in (998, 1950):
             #     self.sae.cachelayer.zero(1e-9)
 
-            # if self.t <= 400:
-            #     self.cfg.l1_coeff = l1_coeff * ((self.t) % (400) + 1)
-            # else:
-            #     self.cfg.l1_coeff = l1_coeff
+            if self.cfg.start_from_dead:
+                if self.t <= 100:
+                    self.cfg.l1_coeff = l1_coeff * ((self.t) % (100) + 1)
+                else:
+                    self.cfg.l1_coeff = l1_coeff
 
             try:
                 x, y = bn
@@ -232,9 +244,13 @@ class SAETrainer:
 
     def loss(self, cache: SAETrainCache):
         # print("l1 coeff", self.cfg.l1_coeff)
+        return cache.l2 / 40 + cache["encoder"].l1 * self.cfg.l1_coeff
+        return cache.l2_norm + cache["encoder"].l1 * self.cfg.l1_coeff
         return cache.l2**0.5 + cache["encoder"].l1 * self.cfg.l1_coeff
 
     def full_log(self, cache: Cache):
+        if self.t % 10 != 0:
+            return
         d = cache.logdict(excluded=["acts", "y_pred", "x", "y", "resample"])
         # print(d)
         if wandb.run is not None:
@@ -255,13 +271,20 @@ class QueuedTopkDiffResampler(
 class QueuedSVDResampler(QueuedResampler, SVDResampling): ...
 
 
+class QueuedTopkSVDResampler(QueuedResampler, TopKResampling, SVDResampling): ...
+
+
+@dataclass
+class FreqTrackerCombinedConfig(CountingFreqTrackerConfig, EMAFreqTrackerConfig): ...
+
+
 def main():
     # sae = SAECacheLayer(sae_cfg)
     torch.set_default_dtype(torch.float32)
     device = "cuda"
     batch_size = 1024
     sae_cfg = SAEConfig(
-        lr=3e-3,
+        lr=1e-3,
         betas=(0.0, 0.99),
         d_data=768,
         d_dict=768 * 2,
@@ -295,7 +318,7 @@ def main():
     avg_n_features_active = 10
 
     def buffer():
-        for i in tqdm.tqdm(range(1000000)):
+        for i in tqdm.tqdm(range(90000)):
             rv = (
                 torch.rand(batch_size, num_features, device=device)
                 < (avg_n_features_active / num_features)
