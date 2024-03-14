@@ -53,12 +53,19 @@ class SAEConfig(WandbDynamicConfig):
     l1_coeff: float = 1e-3
     device: str = "cuda"
     start_from_dead: bool = False
+    architecture: str = "n/a"
+    l2_loss_type: str = "squared/40"
+    optim: str = "adam"
+    tied_init: bool = True
+    b_enc_init: float = 0.0
+    bias_lr_coeff: float = 3
 
 
 class SAECache(Cache):
     l1: torch.NumberType = ...
     l0: torch.NumberType = ...
     cumulative_num_resampled = ...
+    x = ...
 
     @staticmethod
     def process_acts(cache, acts: torch.Tensor):
@@ -91,7 +98,9 @@ class SAETrainCache(SAECache):
 
 
 class SAECacheLayer(CacheModule):
-    cfg: dict
+    decoder: nn.Linear
+    encoder: ComponentLayer
+    b_dec: nn.Parameter
 
     def __init__(
         self,
@@ -111,9 +120,7 @@ class SAECacheLayer(CacheModule):
         # )
         assert other_encoder_components == []
         self.decoder = nn.Linear(cfg.d_dict, cfg.d_data, bias=False, device=cfg.device)
-        resampler = resampler_factory(
-            cfg.resampler_cfg, W_next=self.decoder.weight.transpose(-2, -1)
-        )
+        resampler = resampler_factory(cfg.resampler_cfg, W_next=self.decoder.weight)
         freq_tracker = (freq_tracker_factory or CountingFreqTracker)(
             cfg.freq_tracker_cfg
         )
@@ -125,9 +132,12 @@ class SAECacheLayer(CacheModule):
             train_cache=cache_factory(),
             eval_cache=(eval_cache_factory or cache_factory)(),
         )
+        if cfg.tied_init:
+            self.decoder.weight.data[:] = self.encoder.cachelayer.W.data
         self.b_dec = nn.Parameter(torch.zeros(cfg.d_data))  # TODO
 
     def forward(self, x, cache: SAECache):
+        # cache.x = x
         cache.y_pred = (
             y_pred := (
                 self.decoder(
@@ -141,6 +151,7 @@ class SAECacheLayer(CacheModule):
     def zero(self, n=0):
         # self.decoder.weight.data[:] = 0.0 + n
         self.encoder.cachelayer.W.data[:] = 0.0 + n
+        self.encoder.cachelayer.b.data[:] = -1e-9 + n
 
 
 class SAEComponentLayer(ComponentLayer):
@@ -172,6 +183,9 @@ class SAETrainer:
     ):
 
         self.cfg = cfg
+        resampler_factory = resampler_factory.bind_named_args(
+            get_optim_fn=lambda: self.optim
+        )
         self.sae = ComponentLayer(
             cachelayer=SAECacheLayer(
                 cfg,
@@ -184,12 +198,44 @@ class SAETrainer:
             train_cache=SAETrainCache(),
             eval_cache=SAETrainCache(),
         ).to(cfg.device)
-        self.optim = torch.optim.Adam(self.sae.parameters(), lr=cfg.lr, betas=cfg.betas)
+
+        if cfg.optim == "adam":
+            self.optim = torch.optim.Adam(self.parameters(), lr=cfg.lr, betas=cfg.betas)
+        elif cfg.optim == "radam":
+            self.optim = torch.optim.RAdam(
+                self.parameters(), lr=cfg.lr, betas=cfg.betas
+            )
+        elif cfg.optim == "sgd":
+            self.optim = torch.optim.SGD(
+                self.parameters(), lr=cfg.lr, momentum=cfg.betas[0], nesterov=True
+            )
+        elif cfg.optim == "nadam":
+            self.optim = torch.optim.NAdam(
+                self.parameters(), lr=cfg.lr, betas=cfg.betas
+            )
         self.t = 1
         self.extra_calls = []
 
+    def parameters(self):
+        biases = [self.sae.cachelayer.b_dec, self.sae.cachelayer.encoder.cachelayer.b]
+        weights = [
+            self.sae.cachelayer.decoder.weight,
+            self.sae.cachelayer.encoder.cachelayer.W,
+        ]
+        return [
+            {"params": biases, "lr": self.cfg.lr * self.cfg.bias_lr_coeff},
+            {"params": weights},
+        ]
+
     def train(self, buffer):
         l1_coeff = self.cfg.l1_coeff
+        if self.cfg.start_from_dead:
+            with torch.no_grad():
+                self.sae.cachelayer.zero()
+                self.sae.cachelayer.encoder.cachelayer.W[0, 0] = torch.randn_like(
+                    self.sae.cachelayer.encoder.cachelayer.W[0, 0]
+                )
+        self.norm_dec()
         for bn in buffer:
             if self.t % 4000 == 1:
                 for call in self.extra_calls:
@@ -197,11 +243,11 @@ class SAETrainer:
             # if self.t in (998, 1950):
             #     self.sae.cachelayer.zero(1e-9)
 
-            if self.cfg.start_from_dead:
-                if self.t <= 100:
-                    self.cfg.l1_coeff = l1_coeff * ((self.t) % (100) + 1)
-                else:
-                    self.cfg.l1_coeff = l1_coeff
+            # if self.cfg.start_from_dead:
+            #     if self.t <= 1000:
+            #         self.cfg.l1_coeff = l1_coeff * ((self.t) % (1000) + 1)
+            #     else:
+            #         self.cfg.l1_coeff = l1_coeff
 
             try:
                 x, y = bn
@@ -233,20 +279,42 @@ class SAETrainer:
         self.optim.zero_grad()
         self.norm_dec()
 
+    @torch.no_grad()
     def norm_dec_grads(self):
-        pass  # TODO
+        dec_normed = self.sae.cachelayer.decoder.weight.data
 
     def norm_dec(self):
+        if self.t % 1000 == 0:
+            print("norm dec", self.sae.cachelayer.decoder.weight.shape)
         self.sae.cachelayer.decoder.weight.data[:] = (
             self.sae.cachelayer.decoder.weight.data
-            / self.sae.cachelayer.decoder.weight.data.norm(dim=-1, keepdim=True)
+            / self.sae.cachelayer.decoder.weight.data.norm(dim=0, keepdim=True)
         )
 
     def loss(self, cache: SAETrainCache):
         # print("l1 coeff", self.cfg.l1_coeff)
-        return cache.l2 / 40 + cache["encoder"].l1 * self.cfg.l1_coeff
-        return cache.l2_norm + cache["encoder"].l1 * self.cfg.l1_coeff
-        return cache.l2**0.5 + cache["encoder"].l1 * self.cfg.l1_coeff
+        return (
+            self.get_l2_type(cache, self.cfg.l2_loss_type)
+            + cache["encoder"].l1 * self.cfg.l1_coeff
+        )
+
+    def get_l2_type(self, cache, l2_type):
+        if isinstance(l2_type, str):
+            if l2_type == "squared/40":
+                return cache.l2 / 40
+            elif l2_type == "l2_norm":
+                return cache.l2_norm
+            elif l2_type == "l2_root":
+                return cache.l2**0.5
+            elif l2_type == "l2_norm_squared/40":
+                return cache.l2_norm**2 / 40
+            else:
+                raise ValueError(f"l2_type {l2_type} not recognized")
+        else:
+            v = 0
+            for l2 in l2_type:
+                v = v + self.get_l2_type(cache, l2)
+            return v / len(l2_type)
 
     def full_log(self, cache: Cache):
         if self.t % 10 != 0:
@@ -331,6 +399,8 @@ def main():
             )
             yield rv @ m
 
+    print(trainer.sae.cachelayer.encoder.component_architectures())
+    assert False
     trainer.sae.cachelayer.zero(1)
     trainer.train(buffer())
 
