@@ -106,6 +106,37 @@ class ActsConfig:
             except FileNotFoundError:
                 break
 
+    @torch.no_grad()
+    def read_as_iter_no_bos(self, batch_size):
+        chunk_num = 0
+        bos_example = None
+        next_chunk = self.read_chunk(chunk_num)
+        tqdm_iter = tqdm.trange(5000 * len(next_chunk) // batch_size)
+        while True:
+            if bos_example is None:
+                norms = next_chunk.norm(dim=-1)
+                i = norms.argmax()
+                mm = norms[i]
+                if 3100 > mm > 3000:
+                    bos_example = next_chunk[i]
+                    assert bos_example.ndim == 1
+            cheq_okay = (
+                next_chunk[:, :200] - bos_example[:200].unsqueeze(0) > 1e-5
+            ).any(dim=-1)
+            next_chunk = next_chunk[cheq_okay]
+            for i in range(0, len(next_chunk), batch_size):
+                tqdm_iter.update(1)
+                if i + batch_size > len(next_chunk):
+                    break
+                yield next_chunk[i : i + batch_size]
+            chunk_num += 1
+            try:
+                # print("loading chunk", chunk_num)
+                next_chunk = self.read_chunk(chunk_num)
+                # print("loaded chunk", chunk_num, next_chunk.shape)
+            except FileNotFoundError:
+                break
+
 
 import tqdm
 

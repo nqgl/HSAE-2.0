@@ -36,7 +36,6 @@ class Buffer:
         self.perm = torch.randperm(self.buffer.shape[0])
         self.prevperm = None
         self.perm_i = 0
-        self.arange = None
         self.refresh()
 
     def end_refresh(self):
@@ -104,8 +103,12 @@ class Buffer:
                         "batch seq_pos n_head d_head -> (batch seq_pos) (n_head d_head)",
                     )
                 else:
+                    acts_no_re = l[0][:, 1:]
+                    assert torch.all(l[0][:, 0, :] - l[0][0, 0, :] < 1e-5), (
+                        l[0][:, 0, :] - l[0][0, 0, :]
+                    ).max()
                     acts = einops.rearrange(
-                        l[0],
+                        acts_no_re,
                         "batch seq_pos d_act -> (batch seq_pos) d_act",
                     )
                 assert acts.shape[-1] == self.cfg.d_data

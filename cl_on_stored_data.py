@@ -1,4 +1,5 @@
 from cl_on_data import *
+from deep_sae import trainer
 
 
 def main():
@@ -7,7 +8,7 @@ def main():
     # trainer.sae.cachelayer.zero(1)
     from stored_acts_buffer import ac
 
-    trainer.train(ac.read_as_iter(1024))
+    train(trainer, ac.read_as_iter_no_bos(1024))
     # with torch.cuda.amp.autocast():
     #     trainer.train(train_buffer())
 
