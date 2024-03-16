@@ -19,14 +19,26 @@ from nqgl.mlutils.components.component_layer.resampler import (
 from resamplers import QueuedSVDResampler
 from nqgl.mlutils.components.component_layer.freq_tracker import EMAFreqTracker
 from sae_seq import SequentialCacheLayer, CatSeqCacheLayer
-
-resampler = NoResampling
-freq_tracker = EMAFreqTracker
+from resamplers import (
+    QueuedTopkDiffDecYEncResampler,
+    QueuedOrthTopkDiffDecYEncResampler,
+)
+from unpythonic import box
 import torch.nn as nn
 
 
 class L1L0Reader(LayerComponent):
     _default_component_name = "cache_rewriter"
+
+    def _register_parent_layer(self, layer: ComponentLayer):
+        super()._register_parent_layer(layer)
+
+        def handle_acts(cache: Cache, acts):
+            n = len(self._layer.cachelayer._sequence)
+            if cache._subcache_index == n:
+                cache._parent.acts = acts
+
+        layer.train_cache_template.register_write_callback("acts", handle_acts)
 
     def _update_from_cache(self, cache: Cache, **kwargs):
         # if cache._subcache_index + 1 in cache._parent._subcaches:
@@ -34,7 +46,8 @@ class L1L0Reader(LayerComponent):
         last_id = max([i for i in cache._subcaches if isinstance(i, int)])
         cache.l0 = cache[last_id].l0
         cache.l1 = cache[last_id].l1
-        cache.l0l1 = cache[last_id].l0l1
+        if cache[last_id].has.l0l1:
+            cache.l0l1 = cache[last_id].l0l1
 
         # cache += cache[)]
 
@@ -62,16 +75,42 @@ from cl_on_data import sae_cfg as cfg
 #         components=[],
 #     ),
 # )
-class SeqForSAE(SequentialCacheLayer):
+class SeqForSAEAdapter(CacheModule):
+    def __init__(self, *modules):
+        super().__init__(*modules)
+
     @property
     def W(self):
-        return self._sequence[-1].W
+        return self._sequence[-1].cachelayer.W
 
     @property
     def b(self):
-        return self._sequence[-1].b
+        return self._sequence[-1].cachelayer.b
 
-    # def s
+
+class SeqForSAE(SeqForSAEAdapter, SequentialCacheLayer): ...
+
+
+class CatSeqForSAE(SeqForSAEAdapter, CatSeqCacheLayer): ...
+
+
+# def s
+
+
+fibox = box()
+
+# resampler = QueuedTopkDiffDecYEncResampler(
+resampler = QueuedOrthTopkDiffDecYEncResampler(
+    cfg=cfg.resampler_cfg, get_optim_fn=lambda: fibox.x.optim
+)
+freq_tracker = EMAFreqTracker(cfg=cfg.freq_tracker_cfg)
+MULT_IN = 3
+resampled_layer = ComponentLayer(
+    cachelayer=CacheLayer.from_dims(d_in=cfg.d_data * MULT_IN, d_out=cfg.d_dict),
+    components=[freq_tracker, resampler],
+    train_cache=SAETrainCache(),
+    eval_cache=SAETrainCache(),
+)
 
 
 # cfg.d_in = cfg.d_data * 2
@@ -82,16 +121,24 @@ trainer = SAETrainer(
         cfg=cfg,
         sae_cachelayer=SAECacheLayer(
             cfg=cfg,
-            encoder_cachelayer=CatSeqCacheLayer(
-                CacheLayer.from_dims(
-                    d_in=cfg.d_data, d_out=cfg.d_data, nonlinearity=nn.ReLU()
+            encoder=ComponentLayer(
+                cachelayer=CatSeqForSAE(
+                    # CacheLayer.from_dims(
+                    #     d_in=cfg.d_data, d_out=cfg.d_data, nonlinearity=nn.LeakyReLU()
+                    # ),
+                    CacheLayer.from_dims(
+                        d_in=cfg.d_data,
+                        d_out=cfg.d_data * 2,
+                        nonlinearity=nn.LeakyReLU(),
+                    ),
+                    CacheLayer.from_dims(
+                        d_in=cfg.d_data * 3,
+                        d_out=cfg.d_data * (MULT_IN - 1),
+                        nonlinearity=nn.LeakyReLU(),
+                    ),
+                    resampled_layer,
                 ),
-                # CacheLayer.from_dims(
-                #     d_in=cfg.d_data * 2,
-                #     d_out=cfg.d_data,
-                #     nonlinearity=nn.ReLU(),
-                # ),
-                CacheLayer.from_dims(d_in=cfg.d_data * 2, d_out=cfg.d_dict),
+                components=[L1L0Reader()],
             ),
             # encoder_cachelayer=ComponentLayer(
             #     cachelayer=CacheLayer.from_dims(
@@ -99,13 +146,15 @@ trainer = SAETrainer(
             #     ),
             # ),
             other_encoder_components=[L1L0Reader()],
-            freq_tracker_factory=freq_tracker,
-            resampler_factory=resampler,
+            # freq_tracker_factory=freq_tracker,
+            # resampler_factory=resampler,
+            resampler=resampler,
+            freq_tracker=freq_tracker,
         ),
     ),
     # components=[],
 )
-
+fibox << trainer
 
 # SequentialCacheLayer(
 #     CacheLayer.from_dims(d_in=cfg.d_data, d_out=cfg.d_data * 2),

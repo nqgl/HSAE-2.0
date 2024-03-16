@@ -1,4 +1,3 @@
-from nqgl.sae.training.buffer import Buffer
 from nqgl.sae.training.setup_utils import load_data, get_model
 from nqgl.sae.hsae.hsae import HierarchicalAutoEncoderConfig, HierarchicalAutoEncoder
 from dataclasses import dataclass
@@ -14,22 +13,6 @@ DTYPES = {
     "fp16": torch.float16,
 }
 
-cfg = HierarchicalAutoEncoderConfig(
-    site="resid_pre",
-    d_data=768,
-    model_name="gpt2-small",
-    layer=6,
-    gram_shmidt_trail=512,
-    batch_size=1024,
-    buffer_mult=2048,
-    buffer_refresh_ratio=0.5,
-    flatten_heads=False,
-    buffer_dtype="bf16" if not fp32 else "fp32",
-    enc_dtype="bf16" if not fp32 else "fp32",
-    device="cuda",
-    # buffer_batch_divisor=4,
-)
-
 
 @dataclass
 class ActsConfig:
@@ -44,6 +27,7 @@ class ActsConfig:
     buffer_refresh_ratio: float = 0.5
     d_data: int = 768
     max_chunk_size_mb: int = 512
+    exclude_bos_acts: bool = True
 
     def chunk_name(self, chunk_num: int):
         return self.folder_name() + f"/chunk{chunk_num}.pt"
@@ -53,6 +37,7 @@ class ActsConfig:
             f"saved_acts/{self.dataset.replace('/', '_')}/{self.model_name}"
             + f"/layer{self.layer_num}/{self.site_name}"
             + f"/{self.start_percent}-{self.end_percent}/{self.dtype}"
+            + f"excl_bos_{self.exclude_bos_acts}"
         )
 
     def path(self, chunk_num: Optional[int] = None):
@@ -162,12 +147,16 @@ def store_acts(ac: ActsConfig, batch_size=2048, buffer_mult=1024):
         model,
         dataset="apollo-research/sae-Skylion007-openwebtext-tokenizer-gpt2",
         # dataset="stas/openwebtext-10k",
-        name=cfg.model_name,
+        name=hcfg.model_name,
         split=f"train[{ac.start_percent}%:{ac.end_percent}%]",
         front_only=False,
     )  # .cuda()
+    if ac.exclude_bos_acts:
+        from buffer2 import Buffer
+    else:
+        from nqgl.sae.training.buffer import Buffer
     buffer = Buffer(hcfg, all_tokens, model)
-    buffer.freshen_buffer(8, True)
+    buffer.freshen_buffer(4, True)
     # chunk_num = 0
     num_chunks = all_tokens.numel() // ac.get_tensor_len()
     overflow_lost = all_tokens.numel() % ac.get_tensor_len()
@@ -187,13 +176,21 @@ def store_acts(ac: ActsConfig, batch_size=2048, buffer_mult=1024):
 
 
 ac = ActsConfig(
-    start_percent=1, end_percent=6, max_chunk_size_mb=256, buffer_refresh_ratio=0.7
+    start_percent=1, end_percent=6, max_chunk_size_mb=1024, buffer_refresh_ratio=0.7
+)
+
+
+ac_small = ActsConfig(
+    start_percent=7, end_percent=8, max_chunk_size_mb=1024, buffer_refresh_ratio=0.48
+)
+ac_mid = ActsConfig(
+    start_percent=8, end_percent=10, max_chunk_size_mb=1024, buffer_refresh_ratio=0.48
 )
 
 
 def main():
     # ac = ActsConfig(start_percent=0, end_percent=1, max_chunk_size_mb=128)
-    store_acts(ac)
+    store_acts(ac_mid)
 
 
 if __name__ == "__main__":

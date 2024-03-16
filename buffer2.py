@@ -77,7 +77,7 @@ class Buffer:
                     int(self.cfg.buffer_batches * self.cfg.buffer_refresh_ratio) + 1
                 )
             self.first = False
-            for _ in range(0, num_batches, self.cfg.model_batch_size):
+            for _ in range(0, num_batches + 1, self.cfg.model_batch_size):
                 tokens = self.all_tokens[
                     self.token_pointer : self.token_pointer + self.cfg.model_batch_size
                 ]
@@ -114,7 +114,7 @@ class Buffer:
                 assert acts.shape[-1] == self.cfg.d_data
                 self.buffer[self.nextperm(acts.shape[0])] = acts
                 self.token_pointer += self.cfg.model_batch_size
-            assert self.pointer > int(
+            assert self.pointer + self.perm_i > int(
                 self.buffer.shape[0] * self.cfg.buffer_refresh_ratio
             ), f"Pointer: {self.pointer}, buffer shape: {self.buffer.shape[0]}, buffer refresh ratio: {self.cfg.buffer_refresh_ratio}"
         self.pointer = 0

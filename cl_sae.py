@@ -122,6 +122,8 @@ class SAECacheLayer(CacheModule):
         eval_cache=None,
         encoder_cachelayer: CacheLayer = None,
         encoder=None,
+        resampler=None,
+        freq_tracker=None,
     ):
         super().__init__()
         self.cfg = cfg
@@ -133,8 +135,11 @@ class SAECacheLayer(CacheModule):
         train_cache = train_cache or SAETrainCache()
         # assert other_encoder_components == []
         self.decoder = nn.Linear(cfg.d_dict, cfg.d_out, bias=False, device=cfg.device)
-        resampler = resampler_factory(cfg.resampler_cfg, W_next=self.decoder.weight)
-        freq_tracker = (freq_tracker_factory or CountingFreqTracker)(
+        resampler = resampler or resampler_factory(
+            cfg.resampler_cfg, W_next=self.decoder.weight
+        )
+        resampler.W_next = self.decoder.weight
+        freq_tracker = freq_tracker or (freq_tracker_factory or CountingFreqTracker)(
             cfg.freq_tracker_cfg
         )
         cachelayer = encoder_cachelayer or CacheLayer.from_dims(
@@ -283,11 +288,6 @@ class SAETrainer:
             )
 
     def update_optim_lrs(self):
-        for p in self.optim.param_groups:
-            p["lr"] = self.cfg.lr
-
-        return
-
         for pg in self.optim.param_groups:
             if pg["name"] == "bias":
                 pg["lr"] = self.cfg.lr * self.cfg.bias_lr_coeff
@@ -297,7 +297,21 @@ class SAETrainer:
                 raise ValueError(f"param group name {pg['name']} not recognized")
 
     def parameters(self):
-        return self.sae.parameters()
+        bias_params = []
+        for name, param in self.sae.named_parameters():
+            if name.endswith(".b_dec") or name.endswith(".b") or name.endswith(".bias"):
+                bias_params.append(param)
+
+        weights = set(self.sae.parameters()) - set(bias_params)
+        groups = [
+            {
+                "params": bias_params,
+                "lr": self.cfg.lr * self.cfg.bias_lr_coeff,
+                "name": "bias",
+            },
+            {"params": list(weights), "lr": self.cfg.lr, "name": "weight"},
+        ]
+        return groups
         biases = [self.sae.cachelayer.b_dec, self.sae.cachelayer.encoder.cachelayer.b]
         weights = [
             self.sae.cachelayer.decoder.weight,
@@ -345,9 +359,9 @@ class SAETrainer:
         self.optim.step()
         self.optim.zero_grad()
         self.norm_dec()
-        if cache["encoder"].has.resample:
-            cache["encoder"].num_resampled = ...
-            cache["encoder"].resample(x=x)
+        for c in cache.search("resample"):
+            c.num_resampled = ...
+            c.resample(x=x)
         # if self.t % 100 == 0:
         for call in self.extra_calls:
             call(cache)

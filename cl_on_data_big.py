@@ -7,9 +7,11 @@ from nqgl.sae.scripts.train_hsae import (
     HierarchicalAutoEncoderConfig,
     SerializableNonlinearity,
     ForwardOptions,
+    Buffer,
 )
 from recons_modified import get_recons_loss
-from buffer2 import Buffer
+
+# from buffer2 import Buffer
 from nqgl.mlutils.components.component_layer.resampler.methods.orth_resampler import (
     OrthRankedTopkResamplingConfig,
 )
@@ -30,8 +32,8 @@ legacy_cfg = HierarchicalAutoEncoderConfig(
     layer=6,
     gram_shmidt_trail=512,
     batch_size=1024,
-    buffer_mult=2048,
-    buffer_refresh_ratio=0.48,
+    buffer_mult=4096,
+    buffer_refresh_ratio=0.4,
     flatten_heads=False,
     buffer_dtype="bf16" if not fp32 else "fp32",
     enc_dtype="bf16" if not fp32 else "fp32",
@@ -42,10 +44,10 @@ legacy_cfg = HierarchicalAutoEncoderConfig(
 # Actual configs
 device = "cuda"
 batch_size = legacy_cfg.batch_size
-dict_mult = 8
+dict_mult = 32
 sae_cfg = SAEConfig(
-    lr=1e-4,
-    betas=(0.8, 0.99),
+    lr=7e-4,
+    betas=(0.8, 0.995),
     d_data=768,
     d_dict=int(768 * dict_mult),
     resampler_cfg=QKOrthResampleConfig(
@@ -59,7 +61,7 @@ sae_cfg = SAEConfig(
         num_to_resample=16,
         resample_top_k=32,
         normalized_encoder_multiplier=0.003,
-        resampling_cycle=(20000, 25000),
+        resampling_cycle=(12000, 12000),
         append_to_queue=False,
         # gram_schmidt_trail=,
         negative_bias_multiplier=20,
@@ -71,13 +73,13 @@ sae_cfg = SAEConfig(
     optim="adam",
     b_enc_init=-3,
     start_from_dead=False,
-    bias_lr_coeff=3,
+    bias_lr_coeff=1,
     # l2_loss_type="l2_norm",
     # l2_loss_type=["l2_norm_squared/40", "l2_norm", "l2_root"],
     l2_loss_type=["l2_norm_squared/40", "squared/40", "l2_norm"],
     # l1_coeff=1 / (10),
     l1_coeff=1 / (10),
-    l0l1_coeff=1 / 4000,
+    l0l1_coeff=None,
     l0l1_thresh=20,
 )
 
@@ -99,7 +101,7 @@ all_tokens = load_data(
     model,
     dataset="apollo-research/sae-Skylion007-openwebtext-tokenizer-gpt2",
     name=legacy_cfg.model_name,
-    split=f"train[5%:{5+train_percent}%]",
+    split=f"train[10%:{10+train_percent}%]",
     front_only=False,
     seq_len=128,
 )  # .cuda()
@@ -137,7 +139,7 @@ def train(trainer: SAETrainer, data_source):
         #     trainer.sae.cachelayer.zero(1e-9)
 
     def warmup(cache):
-        T = 15000
+        T = 10000
         m = 100
         v = (T // m) ** 2
         if trainer.t == 1:
@@ -158,8 +160,8 @@ def train(trainer: SAETrainer, data_source):
 
     def schedule_lr(cache):
         # return
-        if (trainer.t + 20000) % 30000 == 0 and trainer.t > 30000:
-            trainer.cfg.lr = max(trainer.cfg.lr * (1 / 2), 3e-5)
+        if (trainer.t + 3000) % 30000 == 0 and trainer.t > 5000:
+            trainer.cfg.lr = max(trainer.cfg.lr * (1 / 3), 3e-5)
             # trainer.init_optim()
             trainer.update_optim_lrs()
 
@@ -167,9 +169,9 @@ def train(trainer: SAETrainer, data_source):
         def callback(cache):
             if trainer.t >= 10000 and trainer.t % 100 == 0:
                 if cache["encoder"].l0 > target_l0 + margin:
-                    trainer.cfg.l1_coeff = trainer.cfg.l1_coeff * 1.00035
+                    trainer.cfg.l1_coeff = trainer.cfg.l1_coeff * 1.0002
                 elif cache["encoder"].l0 < target_l0 - margin:
-                    trainer.cfg.l1_coeff = trainer.cfg.l1_coeff * 0.9993
+                    trainer.cfg.l1_coeff = trainer.cfg.l1_coeff * 0.9998
 
         return callback
 
@@ -234,7 +236,7 @@ def train(trainer: SAETrainer, data_source):
         end_resampling,
         # schedule_l0l1,
         schedule_lr,
-        target_l0_with_l1(45),
+        target_l0_with_l1(40),
         warmup,
     ]
 

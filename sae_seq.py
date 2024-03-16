@@ -13,12 +13,19 @@ class SeqSAECatPrev(SAEConfig):
     cache_site: str = "acts"
 
 
-class SeqSAEWithPrevActs(SAECacheLayer):
-    cfg: SeqSAECatPrev
+class CatPrevToInputModule(CacheModule):
+    def __init__(self, module: CacheModule, cache_site: str = "acts"):
+        self.cache_site = cache_site
+        self._module = module
 
     def forward(self, x, cache: SAECache):
-        x = torch.cat((x, getattr(cache._prev_cache, self.cfg.cache_site)), dim=-1)
-        return super().forward(x, cache)
+        cache.y = (
+            y := self._module(
+                torch.cat((x, getattr(cache._prev_cache, self.cache_site)), dim=-1),
+                cache=cache,
+            )
+        )
+        return y
 
 
 class SeqSAEsCL(CacheModule):
@@ -71,11 +78,53 @@ class CatSeqCacheLayer(CacheModule):
                 nx = module(
                     torch.cat((x, nx), dim=-1) if nx is not None else x,
                     cache=cache[i],
-                    **kwargs
+                    **kwargs,
                 )
             else:
                 nx = module(torch.cat((x, nx), dim=-1) if nx is not None else x)
         return nx
+
+
+class CatOutputSeqCacheLayer(CacheModule):
+    def __init__(self, *modules):
+        super().__init__()
+        self._sequence = nn.ModuleList(modules)
+
+    def forward(self, x, cache: Cache = None, **kwargs):
+        y = []
+        for i, module in enumerate(self._sequence):
+            if isinstance(module, CacheModule):
+                y.append(
+                    module(
+                        torch.cat([x] + y, dim=-1) if y else x,
+                        cache=cache[i],
+                        **kwargs,
+                    )
+                )
+            else:
+                raise ValueError("Only CacheModules are allowed in this sequence")
+        return torch.cat(y, dim=-1)
+
+
+class CatOutputSeqCacheLayer(CacheModule):
+    def __init__(self, *modules):
+        super().__init__()
+        self._sequence = nn.ModuleList(modules)
+
+    def forward(self, x, cache: Cache = None, **kwargs):
+        y = []
+        for i, module in enumerate(self._sequence):
+            if isinstance(module, CacheModule):
+                y.append(
+                    module(
+                        torch.cat([x] + y, dim=-1) if y else x,
+                        cache=cache[i],
+                        **kwargs,
+                    )
+                )
+            else:
+                raise ValueError("Only CacheModules are allowed in this sequence")
+        return torch.cat(y, dim=-1)
 
 
 class SumSeqCacheLayer(CacheModule):

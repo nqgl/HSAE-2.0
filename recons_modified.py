@@ -7,15 +7,17 @@ from nqgl.sae.training.setup_utils import DTYPES
 
 @torch.no_grad()
 def get_recons_loss(
-    model, encoder, buffer, num_batches=5, local_encoder=None, cfg=None
+    model, encoder, buffer, all_tokens=None, num_batches=5, local_encoder=None, cfg=None
 ):
     cfg = cfg or encoder.cfg
     if local_encoder is None:
         local_encoder = encoder
     loss_list = []
     for i in range(num_batches):
-        tokens = buffer.all_tokens[
-            torch.randperm(len(buffer.all_tokens))[: max(cfg.model_batch_size // 16, 1)]
+        tokens = (all_tokens if all_tokens is not None else buffer.all_tokens)[
+            torch.randperm(
+                len(all_tokens if all_tokens is not None else buffer.all_tokens)
+            )[: max(cfg.model_batch_size // 16, 1)]
         ]
         assert torch.all(50256 == tokens[:, 0])
         loss = model(tokens, return_type="loss")
