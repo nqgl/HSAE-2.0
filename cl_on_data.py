@@ -54,7 +54,7 @@ sae_cfg = SAEConfig(
         min_viable_count=4_000 * batch_size,
         reset_all_freqs_interval=10_000,
         reset_all_freqs_offset=5_000,
-        check_frequency=1000,
+        check_frequency=500,
         resample_frequency=64,
         num_to_resample=16,
         resample_top_k=32,
@@ -63,10 +63,10 @@ sae_cfg = SAEConfig(
         append_to_queue=False,
         # gram_schmidt_trail=,
         negative_bias_multiplier=20,
-        sq_ema_reset_ratio=1,
-        bias_sq_ema_reset_ratio=1,
+        sq_ema_reset_ratio=3,
+        bias_sq_ema_reset_ratio=3,
     ),
-    freq_tracker_cfg=FreqTrackerCombinedConfig(decay=0.995, initial_freq_value=12e-6),
+    freq_tracker_cfg=FreqTrackerCombinedConfig(decay=0.995, initial_freq_value=1 / 768),
     device=device,
     optim="nadam",
     b_enc_init=-3,
@@ -158,7 +158,7 @@ def train(trainer: SAETrainer, data_source):
 
     def schedule_lr(cache):
         # return
-        if (trainer.t - 9000) % 25000 == 0 and trainer.t > 10000:
+        if (trainer.t - 5000) % 15000 == 0 and trainer.t > 10000:
             trainer.cfg.lr = max(trainer.cfg.lr * (1 / 2), 3e-5)
             # trainer.init_optim()
             trainer.update_optim_lrs()
