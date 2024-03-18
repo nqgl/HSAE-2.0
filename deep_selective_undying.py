@@ -16,18 +16,22 @@ from nqgl.mlutils.components.component_layer.resampler import (
     ResamplingMethod,
     NoResampling,
 )
-from resamplers import QueuedSVDResampler
+
+# from resamplers import QueuedSVDResampler
 from nqgl.mlutils.components.component_layer.freq_tracker import EMAFreqTracker
 from sae_seq import SequentialCacheLayer, CatSeqCacheLayer
-from resamplers import (
-    QueuedTopkDiffDecYEncResampler,
-    QueuedOrthTopkDiffDecYEncResampler,
+
+from nqgl.mlutils.components.component_layer.resampler.methods.selective_undying import (
+    SelectiveUndyingResamplerConfig,
+    SelectiveUndyingResampler,
+    SerializableNonlinearity,
 )
 from unpythonic import box
 import torch.nn as nn
+from dataclasses import dataclass, asdict
 
 
-class L1L0Reader(LayerComponent):
+class RewriteLastLayerOfSeqToParent(LayerComponent):
     _default_component_name = "cache_rewriter"
 
     def _register_parent_layer(self, layer: ComponentLayer):
@@ -55,26 +59,6 @@ class L1L0Reader(LayerComponent):
 from cl_on_data import sae_cfg as cfg
 
 
-# trainer = SAETrainer(
-#     cfg=cfg,
-#     sae=SAEComponentLayer(
-#         cfg=cfg,
-#         sae_cachelayer=SAECacheLayer(
-#             cfg=cfg,
-#             encoder_cachelayer=ComponentLayer(
-#                 cachelayer=SequentialCacheLayer(
-#                     CacheLayer.from_dims(d_in=cfg.d_data, d_out=cfg.d_data * 2),
-#                     CacheLayer.from_dims(d_in=cfg.d_data * 2, d_out=cfg.d_data * 2),
-#                     CacheLayer.from_dims(d_in=cfg.d_data * 2, d_out=cfg.d_dict),
-#                 ),
-#                 components=[L1L0Reader(), freq_tracker, resampler],
-#                 train_cache=SAETrainCache(),
-#                 eval_cache=SAETrainCache(),
-#             ),
-#         ),
-#         components=[],
-#     ),
-# )
 class SeqForSAEAdapter(CacheModule):
     def __init__(self, *modules):
         super().__init__(*modules)
@@ -94,27 +78,74 @@ class SeqForSAE(SeqForSAEAdapter, SequentialCacheLayer): ...
 class CatSeqForSAE(SeqForSAEAdapter, CatSeqCacheLayer): ...
 
 
-# def s
+@dataclass
+class SelectiveMergedCfg(
+    SelectiveUndyingResamplerConfig, cfg.resampler_cfg.__class__
+): ...
 
+
+cfg.resampler_cfg = SelectiveMergedCfg(
+    **asdict(cfg.resampler_cfg),
+    undying_relu=SerializableNonlinearity(
+        "undying_relu",
+        {
+            "k": 1,
+            "l": 0.01,
+            "l_mid_neg": 0.002,
+            "l_low_pos": 0.005,
+            "l_low_neg": 0.002,
+        },
+    ),
+    bias_decay=0.9999,
+    alive_thresh_mul=2,
+    resample_before_step=True,
+)
+cfg.resampler_cfg.resample_before_step = True
 
 fibox = box()
 
-# resampler = QueuedTopkDiffDecYEncResampler(
-resampler = QueuedOrthTopkDiffDecYEncResampler(
-    cfg=cfg.resampler_cfg, get_optim_fn=lambda: fibox.x.optim
-)
-freq_tracker = EMAFreqTracker(cfg=cfg.freq_tracker_cfg)
-MULT_IN = 3
-resampled_layer = ComponentLayer(
-    cachelayer=CacheLayer.from_dims(d_in=cfg.d_data * MULT_IN, d_out=cfg.d_dict),
-    components=[freq_tracker, resampler],
-    train_cache=SAETrainCache(),
-    eval_cache=SAETrainCache(),
-)
+
+def selective_resampled_layer(
+    d_in, d_out, cfg, W_next=None, get_optim_fn=lambda: fibox.x.optim
+):
+    resampler = SelectiveUndyingResampler(
+        cfg=cfg.resampler_cfg, get_optim_fn=get_optim_fn, W_next=W_next
+    )
+    freq_tracker = EMAFreqTracker(cfg=cfg.freq_tracker_cfg)
+    resampled_layer = ComponentLayer(
+        cachelayer=CacheLayer.from_dims(
+            d_in=d_in,
+            d_out=d_out,
+            nonlinearity=resampler.nonlinearity,
+        ),
+        components=[freq_tracker, resampler],
+        train_cache=SAETrainCache(),
+        eval_cache=SAETrainCache(),
+    )
+    return resampled_layer, resampler, freq_tracker
+
+
+def selective_undying_layers(
+    d_in, d_out, middle_dims, get_optim_fn=lambda: fibox.x.optim
+):
+    dims = reversed([d_in] + middle_dims)
+    layers = [selective_resampled_layer(middle_dims[-1], d_out)]
+
+    for d_lout, d_lin in zip(dims[:-1], dims[1:]):
+        layers.append(
+            selective_resampled_layer(
+                d_lin, d_lout, cfg, W_next=layers[-1].W, get_optim_fn=get_optim_fn
+            )
+        )
+    return reversed(layers)
 
 
 # cfg.d_in = cfg.d_data * 2
 cfg.tied_init = False
+MULT_IN = 3
+resampled_layer, resampler, freq_tracker = selective_resampled_layer(
+    d_in=cfg.d_data * 3, d_out=cfg.d_dict, cfg=cfg
+)
 trainer = SAETrainer(
     cfg=cfg,
     sae=SAEComponentLayer(
@@ -138,7 +169,7 @@ trainer = SAETrainer(
                     ),
                     resampled_layer,
                 ),
-                components=[L1L0Reader()],
+                components=[RewriteLastLayerOfSeqToParent()],
             ),
             # encoder_cachelayer=ComponentLayer(
             #     cachelayer=CacheLayer.from_dims(

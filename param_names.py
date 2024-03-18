@@ -30,3 +30,7 @@ from deep_sae import trainer
 
 # %%
 p = trainer.sae.parameters()
+
+# %%
+len(set(p))
+# %%

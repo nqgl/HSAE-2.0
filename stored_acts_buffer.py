@@ -126,7 +126,7 @@ class ActsConfig:
 import tqdm
 
 
-def store_acts(ac: ActsConfig, batch_size=2048, buffer_mult=1024):
+def store_acts(ac: ActsConfig, batch_size=2048, buffer_mult=2048):
     hcfg = HierarchicalAutoEncoderConfig(
         site=ac.site_name,
         d_data=ac.d_data,
@@ -181,10 +181,10 @@ ac = ActsConfig(
 
 
 ac_small = ActsConfig(
-    start_percent=7, end_percent=8, max_chunk_size_mb=1024, buffer_refresh_ratio=0.48
+    start_percent=20, end_percent=21, max_chunk_size_mb=1024, buffer_refresh_ratio=0.48
 )
 ac_mid = ActsConfig(
-    start_percent=8, end_percent=10, max_chunk_size_mb=1024, buffer_refresh_ratio=0.48
+    start_percent=21, end_percent=23, max_chunk_size_mb=1024, buffer_refresh_ratio=0.24
 )
 
 

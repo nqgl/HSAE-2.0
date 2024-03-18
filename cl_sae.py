@@ -356,12 +356,21 @@ class SAETrainer:
         cache.loss = loss
         loss.backward()
         self.norm_dec_grads()
+        resample_before_step = getattr(
+            self.cfg.resampler_cfg, "resample_before_step", False
+        )
+        if resample_before_step:
+            for c in cache.search("resample"):
+                c.num_resampled = ...
+                c.resample(x=x)
         self.optim.step()
         self.optim.zero_grad()
         self.norm_dec()
-        for c in cache.search("resample"):
-            c.num_resampled = ...
-            c.resample(x=x)
+        if not resample_before_step:
+            for c in cache.search("resample"):
+                c.num_resampled = ...
+                c.resample(x=x)
+
         # if self.t % 100 == 0:
         for call in self.extra_calls:
             call(cache)

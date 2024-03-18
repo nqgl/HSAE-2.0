@@ -42,14 +42,14 @@ legacy_cfg = HierarchicalAutoEncoderConfig(
 # Actual configs
 device = "cuda"
 batch_size = legacy_cfg.batch_size
-dict_mult = 8
+dict_mult = 16
 sae_cfg = SAEConfig(
-    lr=1e-4,
+    lr=1e-3,
     betas=(0.8, 0.99),
     d_data=768,
     d_dict=int(768 * dict_mult),
     resampler_cfg=QKOrthResampleConfig(
-        dead_threshold=3e-6,
+        dead_threshold=6e-6,
         # dead_threshold=1 / (768 * dict_mult) / 300,
         min_viable_count=4_000 * batch_size,
         reset_all_freqs_interval=10_000,
@@ -59,25 +59,26 @@ sae_cfg = SAEConfig(
         num_to_resample=16,
         resample_top_k=32,
         normalized_encoder_multiplier=0.003,
-        resampling_cycle=(20000, 25000),
+        resampling_cycle=(10000, 20000),
         append_to_queue=False,
         # gram_schmidt_trail=,
         negative_bias_multiplier=20,
-        sq_ema_reset_ratio=3e-1,
+        sq_ema_reset_ratio=1,
         bias_sq_ema_reset_ratio=1,
     ),
-    freq_tracker_cfg=FreqTrackerCombinedConfig(decay=0.9994, initial_freq_value=1e-5),
+    freq_tracker_cfg=FreqTrackerCombinedConfig(decay=0.995, initial_freq_value=12e-6),
     device=device,
-    optim="adam",
+    optim="nadam",
     b_enc_init=-3,
     start_from_dead=False,
     bias_lr_coeff=3,
     # l2_loss_type="l2_norm",
     # l2_loss_type=["l2_norm_squared/40", "l2_norm", "l2_root"],
-    l2_loss_type=["l2_norm_squared/40", "squared/40", "l2_norm"],
+    # l2_loss_type=["l2_norm_squared/40", "squared/40", "l2_norm"],
+    l2_loss_type="squared/40",
     # l1_coeff=1 / (10),
     l1_coeff=1 / (10),
-    l0l1_coeff=1 / 4000,
+    l0l1_coeff=1 / 10000,
     l0l1_thresh=20,
 )
 
@@ -136,29 +137,28 @@ def train(trainer: SAETrainer, data_source):
         # if trainer.t == 2001:
         #     trainer.sae.cachelayer.zero(1e-9)
 
-    def warmup(cache):
-        T = 15000
-        m = 100
-        v = (T // m) ** 2
-        if trainer.t == 1:
-            trainer.cfg.l1_coeff /= v**0.5
-            trainer.cfg.lr /= v
-            trainer.update_optim_lrs()
-            if trainer.cfg.l0l1_coeff is not None:
-                trainer.cfg.l0l1_coeff /= v
-        elif trainer.t < T and trainer.t % m == 1:
-            i = trainer.t // m
-            mul = ((i + 1) / i) ** 2
-            trainer.cfg.l1_coeff *= mul**0.5
-            trainer.cfg.lr *= mul
-            trainer.update_optim_lrs()
+    def warmup(params=["lr"], T=10_000, m=100, exp=1):
+        def warmup(cache):
+            v = (T // m) ** 2
+            for param in params:
+                if trainer.t == 1:
+                    setattr(trainer.cfg, param, getattr(trainer.cfg, param) / (v**exp))
+                    if param == "lr":
+                        trainer.update_optim_lrs()
+                elif trainer.t < T and trainer.t % m == 1:
+                    i = trainer.t // m
+                    mul = ((i + 1) / i) ** 2
+                    setattr(
+                        trainer.cfg, param, getattr(trainer.cfg, param) * (mul**exp)
+                    )
+                    if param == "lr":
+                        trainer.update_optim_lrs()
 
-            if trainer.cfg.l0l1_coeff is not None:
-                trainer.cfg.l0l1_coeff *= mul
+        return warmup
 
     def schedule_lr(cache):
         # return
-        if (trainer.t + 20000) % 30000 == 0 and trainer.t > 30000:
+        if (trainer.t - 9000) % 25000 == 0 and trainer.t > 10000:
             trainer.cfg.lr = max(trainer.cfg.lr * (1 / 2), 3e-5)
             # trainer.init_optim()
             trainer.update_optim_lrs()
@@ -167,9 +167,13 @@ def train(trainer: SAETrainer, data_source):
         def callback(cache):
             if trainer.t >= 10000 and trainer.t % 100 == 0:
                 if cache["encoder"].l0 > target_l0 + margin:
-                    trainer.cfg.l1_coeff = trainer.cfg.l1_coeff * 1.00035
+                    trainer.cfg.l1_coeff = trainer.cfg.l1_coeff * 1.0001 ** (
+                        cache["encoder"].l0 - target_l0
+                    )
                 elif cache["encoder"].l0 < target_l0 - margin:
-                    trainer.cfg.l1_coeff = trainer.cfg.l1_coeff * 0.9993
+                    trainer.cfg.l1_coeff = trainer.cfg.l1_coeff * 0.9997 ** (
+                        target_l0 - cache["encoder"].l0
+                    )
 
         return callback
 
@@ -234,8 +238,10 @@ def train(trainer: SAETrainer, data_source):
         end_resampling,
         # schedule_l0l1,
         schedule_lr,
-        target_l0_with_l1(45),
-        warmup,
+        target_l0_with_l1(45, margin=0),
+        warmup(["lr"], 10_000, 100, 1),
+        warmup(["l1_coeff"], 5_000, 100, 0.5),
+        # warmup(["l0l1_coeff"], 15_000, 100, 1),
     ]
 
     trainer.train(data_source)
