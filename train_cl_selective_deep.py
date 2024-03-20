@@ -20,21 +20,18 @@ def train_buffer():
 # with torch.cuda.amp.autocast():
 # train(trainer, train_buffer())
 f = True
-buf = ac_mid.read_as_iter(legacy_cfg.batch_size)
-train(trainer, buf)
 try:
+    buf = ac_mid.read_as_iter(legacy_cfg.batch_size)
     next(buf)
     f = False
-    try:
-        pass
-    except:
-        pass
-    print("switching to non-stored data")
-    trainer.train(train_buffer())
 except:
     assert f
     print("using non-stored data")
     train(trainer, train_buffer())
+assert not f
+train(trainer, buf)
+print("switching to non-stored data")
+trainer.train(train_buffer())
 # try:
 #     train(trainer, ac_small.read_as_iter(legacy_cfg.batch_size))
 #     print("switching to next stored data")

@@ -90,20 +90,31 @@ cfg.resampler_cfg = SelectiveMergedCfg(
         "undying_relu",
         {
             "k": 1,
-            "l": 0.01,
-            "l_mid_neg": 0.002,
-            "l_low_pos": 0.005,
-            "l_low_neg": 0.002,
+            "l": 0.001,
+            "l_mid_neg": 0.0005,
+            "l_low_pos": 0.0005,
+            "l_low_neg": 0.0002,
         },
     ),
     bias_decay=0.9999,
-    alive_thresh_mul=2,
+    weight_decay=0.99997,
+    # alive_thresh_mul=2,
+    alive_thresh_mul=5,
     resample_before_step=True,
-    add_to_max_acts=0.0001,
+    # add_to_max_acts=0.0001,
     # max_undying=100,
-    wait_to_check_dead=13_000,
+    # wait_to_check_dead=5_000,
+    # add_softmax_to_acts=True,
+    # add_to_max_acts=0.001,
+    undying_sq_ema_reset_ratio=1e-2,
 )
-cfg.resampler_cfg.resample_before_step = True
+cfg.freq_tracker_cfg.decay = 0.99
+# cfg.resampler_cfg.resample_before_step = True
+# if cfg.resampler_cfg.add_to_max_acts is not None:
+#     cfg.resampler_cfg.alive_thresh_mul += (
+#         1 / cfg.batch_size
+#     ) / cfg.resampler_cfg.dead_threshold
+
 
 fibox = box()
 

@@ -93,15 +93,17 @@ cfg.resampler_cfg = SelectiveMergedCfg(
         "undying_relu",
         {
             "k": 1,
-            "l": 0.01,
-            "l_mid_neg": 0.002,
-            "l_low_pos": 0.005,
-            "l_low_neg": 0.002,
+            "l": 0.1,
+            "l_mid_neg": 0.02,
+            "l_low_pos": 0.05,
+            "l_low_neg": 0.02,
         },
     ),
     bias_decay=0.9999,
-    alive_thresh_mul=2,
+    alive_thresh_mul=10,
     resample_before_step=True,
+    add_to_max_acts=0.001,
+    undying_sq_ema_reset_ratio=1e-4
 )
 cfg.resampler_cfg.resample_before_step = True
 

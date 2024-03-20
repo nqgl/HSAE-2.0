@@ -42,19 +42,20 @@ legacy_cfg = HierarchicalAutoEncoderConfig(
 # Actual configs
 device = "cuda"
 batch_size = legacy_cfg.batch_size
-dict_mult = 16
+dict_mult = 8
 sae_cfg = SAEConfig(
     lr=1e-3,
-    betas=(0.8, 0.99),
+    betas=(0.8, 0.997),
     d_data=768,
     d_dict=int(768 * dict_mult),
+    batch_size=batch_size,
     resampler_cfg=QKOrthResampleConfig(
         dead_threshold=6e-6,
         # dead_threshold=1 / (768 * dict_mult) / 300,
         min_viable_count=4_000 * batch_size,
         reset_all_freqs_interval=10_000,
         reset_all_freqs_offset=5_000,
-        check_frequency=500,
+        check_frequency=1,
         resample_frequency=64,
         num_to_resample=16,
         resample_top_k=32,
@@ -63,8 +64,8 @@ sae_cfg = SAEConfig(
         append_to_queue=False,
         # gram_schmidt_trail=,
         negative_bias_multiplier=20,
-        sq_ema_reset_ratio=3,
-        bias_sq_ema_reset_ratio=3,
+        sq_ema_reset_ratio=1,
+        bias_sq_ema_reset_ratio=1,
     ),
     freq_tracker_cfg=FreqTrackerCombinedConfig(decay=0.995, initial_freq_value=1 / 768),
     device=device,
@@ -76,6 +77,7 @@ sae_cfg = SAEConfig(
     # l2_loss_type=["l2_norm_squared/40", "l2_norm", "l2_root"],
     # l2_loss_type=["l2_norm_squared/40", "squared/40", "l2_norm"],
     l2_loss_type="squared/40",
+    # l2_loss_type="l2_norm_squared/40",
     # l1_coeff=1 / (10),
     l1_coeff=1 / (10),
     l0l1_coeff=1 / 10000,
@@ -93,24 +95,42 @@ trainer = SAETrainer(
     freq_tracker_factory=EMAFreqTracker,
 )
 
+dataset = "apollo-research/sae-Skylion007-openwebtext-tokenizer-gpt2"
+dataset = "monology/pile-uncopyrighted"
+dataset = "alancooney/sae-monology-pile-uncopyrighted-tokenizer-gpt2"
+seq_mul = 2
 # Data
+from typing import Tuple
+
+
+@dataclass
+class TrainConfig:
+    dataset_name: str
+    train_split: Tuple[int, int]
+    val_split: Tuple[int, int]
+    test_split: Tuple[int, int]
+
+
 model = get_model(legacy_cfg)
 train_percent = 5
+train_start = 5
 all_tokens = load_data(
     model,
-    dataset="apollo-research/sae-Skylion007-openwebtext-tokenizer-gpt2",
+    dataset=dataset,
     name=legacy_cfg.model_name,
-    split=f"train[5%:{5+train_percent}%]",
+    split=f"train[{train_start}%:{train_start+train_percent}%]",
     front_only=False,
     seq_len=128,
+    seq_mul=seq_mul,
 )  # .cuda()
 val_tokens = load_data(
     model,
-    dataset="apollo-research/sae-Skylion007-openwebtext-tokenizer-gpt2",
+    dataset=dataset,
     name=legacy_cfg.model_name,
     split=f"train[90%:91%]",
     front_only=False,
     seq_len=128,
+    seq_mul=seq_mul,
 )  # .cuda()
 
 
@@ -158,22 +178,30 @@ def train(trainer: SAETrainer, data_source):
 
     def schedule_lr(cache):
         # return
-        if (trainer.t - 5000) % 15000 == 0 and trainer.t > 10000:
+        if (trainer.t + 7000) % 25000 == 0 and trainer.t > 9000:
             trainer.cfg.lr = max(trainer.cfg.lr * (1 / 2), 3e-5)
             # trainer.init_optim()
             trainer.update_optim_lrs()
 
     def target_l0_with_l1(target_l0, margin=1):
         def callback(cache):
-            if trainer.t >= 10000 and trainer.t % 100 == 0:
+            if trainer.t >= 6500 and trainer.t % 100 == 0:
                 if cache["encoder"].l0 > target_l0 + margin:
-                    trainer.cfg.l1_coeff = trainer.cfg.l1_coeff * 1.0001 ** (
+                    trainer.cfg.l1_coeff = trainer.cfg.l1_coeff * 1.0003 ** (
                         cache["encoder"].l0 - target_l0
                     )
+                    if trainer.cfg.l0l1_coeff is not None:
+                        trainer.cfg.l0l1_coeff = trainer.cfg.l0l1_coeff * 1.0003 ** (
+                            cache["encoder"].l0 - target_l0
+                        )
                 elif cache["encoder"].l0 < target_l0 - margin:
-                    trainer.cfg.l1_coeff = trainer.cfg.l1_coeff * 0.9997 ** (
+                    trainer.cfg.l1_coeff = trainer.cfg.l1_coeff * 0.9995 ** (
                         target_l0 - cache["encoder"].l0
                     )
+                    if trainer.cfg.l0l1_coeff is not None:
+                        trainer.cfg.l0l1_coeff = trainer.cfg.l0l1_coeff * 0.9995 ** (
+                            target_l0 - cache["encoder"].l0
+                        )
 
         return callback
 
@@ -204,17 +232,38 @@ def train(trainer: SAETrainer, data_source):
         if trainer.t % 1000 == 0:
             wandb.log(
                 {
-                    "num_steps": trainer.t,
-                    "recons_score": get_recons_loss(
+                    **{
+                        "num_steps": trainer.t,
+                    },
+                    **{
+                        ("recons/" + k): v
+                        for k, v in get_recons_loss(
+                            model,
+                            trainer.sae,
+                            buffer=None,
+                            all_tokens=val_tokens,
+                            cfg=legacy_cfg,
+                        ).items()
+                    },
+                },
+                step=trainer.t,
+            )
+        if trainer.t % 5000 == 0:
+            wandb.log(
+                {
+                    ("recons/with_proc_bos/" + k): v
+                    for k, v in get_recons_loss(
                         model,
                         trainer.sae,
                         buffer=None,
                         all_tokens=val_tokens,
                         cfg=legacy_cfg,
-                    )[0],
+                        bos_processed_with_hook=True,
+                    ).items()
                 },
                 step=trainer.t,
             )
+
             # y_norms = cache.y.norm(dim=-1)
             # x_norms = cache["encoder"].x.norm(dim=-1)
             # wandb.log(
@@ -240,8 +289,8 @@ def train(trainer: SAETrainer, data_source):
         schedule_lr,
         target_l0_with_l1(45, margin=0),
         warmup(["lr"], 10_000, 100, 1),
-        warmup(["l1_coeff"], 5_000, 100, 0.5),
-        # warmup(["l0l1_coeff"], 15_000, 100, 1),
+        warmup(["l1_coeff"], 4000, 100, 0.5),
+        warmup(["l0l1_coeff"], 5_000, 100, 1),
     ]
 
     trainer.train(data_source)

@@ -60,6 +60,7 @@ class SAEConfig(WandbDynamicConfig):
     different_d_data_in: int = None
     d_in: int = None
     d_out: int = None
+    batch_size: int = None
 
     def __post_init__(self):
         super().__post_init__()
@@ -426,7 +427,17 @@ class SAETrainer:
     def full_log(self, cache: Cache):
         if self.t % 10 != 0:
             return
-        d = cache.logdict(excluded=["acts", "y_pred", "x", "y", "resample"])
+        d = cache.logdict(
+            excluded=[
+                "acts",
+                "y_pred",
+                "x",
+                "y",
+                "resample",
+                "nonlinear_argsmaxed",
+                "acts_spoof",
+            ]
+        )
         # print(d)
         if wandb.run is not None:
             wandb.log(d, step=self.t)
