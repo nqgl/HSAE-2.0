@@ -1,3 +1,5 @@
 wandb/
 ssh*.json
 __pycache__/
+*.pt
+nqgl/sae/models/

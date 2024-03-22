@@ -1,4 +1,4 @@
-from cl_sae import *
+from sae.cl_sae import *
 from nqgl.sae.scripts.train_hsae import (
     # Buffer,
     load_data,
@@ -9,19 +9,23 @@ from nqgl.sae.scripts.train_hsae import (
     ForwardOptions,
 )
 from recons_modified import get_recons_loss
-from buffer2 import Buffer
+from data.buffer2 import Buffer
 from nqgl.mlutils.components.component_layer.resampler.methods.orth_resampler import (
     OrthRankedTopkResamplingConfig,
 )
-from resamplers import (
+from components.resamplers import (
     QKOrthResampleConfig,
     QueuedSVDResampler,
     QueuedOrthDiffResampler,
     QueuedTopkDiffDecYEncResampler,
     QueuedOrthTopkDiffDecYEncResampler,
 )
+from sae.config import SAEConfig
+from sae.trainer import SAETrainer
+from nqgl.mlutils.components.component_layer.freq_tracker import EMAFreqTracker
 
-fp32 = True
+fp32 = False
+torch.set_default_dtype(torch.float32 if fp32 else torch.bfloat16)
 
 legacy_cfg = HierarchicalAutoEncoderConfig(
     site="resid_pre",
@@ -42,20 +46,20 @@ legacy_cfg = HierarchicalAutoEncoderConfig(
 # Actual configs
 device = "cuda"
 batch_size = legacy_cfg.batch_size
-dict_mult = 8
+dict_mult = 16
 sae_cfg = SAEConfig(
     lr=1e-3,
-    betas=(0.8, 0.997),
+    betas=(0.8, 0.99),
     d_data=768,
     d_dict=int(768 * dict_mult),
     batch_size=batch_size,
     resampler_cfg=QKOrthResampleConfig(
-        dead_threshold=6e-6,
+        dead_threshold=1e-6,
         # dead_threshold=1 / (768 * dict_mult) / 300,
         min_viable_count=4_000 * batch_size,
         reset_all_freqs_interval=10_000,
         reset_all_freqs_offset=5_000,
-        check_frequency=1,
+        check_frequency=500,
         resample_frequency=64,
         num_to_resample=16,
         resample_top_k=32,
@@ -67,7 +71,7 @@ sae_cfg = SAEConfig(
         sq_ema_reset_ratio=1,
         bias_sq_ema_reset_ratio=1,
     ),
-    freq_tracker_cfg=FreqTrackerCombinedConfig(decay=0.995, initial_freq_value=1 / 768),
+    freq_tracker_cfg=FreqTrackerCombinedConfig(decay=0.99, initial_freq_value=3e-5),
     device=device,
     optim="nadam",
     b_enc_init=-3,
@@ -157,16 +161,17 @@ def train(trainer: SAETrainer, data_source):
         # if trainer.t == 2001:
         #     trainer.sae.cachelayer.zero(1e-9)
 
-    def warmup(params=["lr"], T=10_000, m=100, exp=1):
+    def warmup(params=["lr"], T=10_000, m=100, exp=1, delay=0):
         def warmup(cache):
             v = (T // m) ** 2
+            t = trainer.t - delay
             for param in params:
                 if trainer.t == 1:
                     setattr(trainer.cfg, param, getattr(trainer.cfg, param) / (v**exp))
                     if param == "lr":
                         trainer.update_optim_lrs()
-                elif trainer.t < T and trainer.t % m == 1:
-                    i = trainer.t // m
+                elif t < T and t % m == 1 and trainer.t > delay:
+                    i = t // m
                     mul = ((i + 1) / i) ** 2
                     setattr(
                         trainer.cfg, param, getattr(trainer.cfg, param) * (mul**exp)
@@ -178,28 +183,29 @@ def train(trainer: SAETrainer, data_source):
 
     def schedule_lr(cache):
         # return
-        if (trainer.t + 7000) % 25000 == 0 and trainer.t > 9000:
+        if (trainer.t + 7000) % 35000 == 0 and trainer.t > 9000:
             trainer.cfg.lr = max(trainer.cfg.lr * (1 / 2), 3e-5)
             # trainer.init_optim()
             trainer.update_optim_lrs()
 
-    def target_l0_with_l1(target_l0, margin=1):
+    def target_l0_with_l1(target_l0, margin=1, start_t=10_000, up=1.0001, down=0.9998):
         def callback(cache):
-            if trainer.t >= 6500 and trainer.t % 100 == 0:
+            if trainer.t >= start_t and trainer.t % 100 == 0:
                 if cache["encoder"].l0 > target_l0 + margin:
-                    trainer.cfg.l1_coeff = trainer.cfg.l1_coeff * 1.0003 ** (
-                        cache["encoder"].l0 - target_l0
+                    trainer.cfg.l1_coeff = (
+                        trainer.cfg.l1_coeff
+                        * up ** (cache["encoder"].l0 - target_l0).item()
                     )
                     if trainer.cfg.l0l1_coeff is not None:
-                        trainer.cfg.l0l1_coeff = trainer.cfg.l0l1_coeff * 1.0003 ** (
+                        trainer.cfg.l0l1_coeff = trainer.cfg.l0l1_coeff * up ** (
                             cache["encoder"].l0 - target_l0
                         )
                 elif cache["encoder"].l0 < target_l0 - margin:
-                    trainer.cfg.l1_coeff = trainer.cfg.l1_coeff * 0.9995 ** (
+                    trainer.cfg.l1_coeff = trainer.cfg.l1_coeff * down ** (
                         target_l0 - cache["encoder"].l0
                     )
                     if trainer.cfg.l0l1_coeff is not None:
-                        trainer.cfg.l0l1_coeff = trainer.cfg.l0l1_coeff * 0.9995 ** (
+                        trainer.cfg.l0l1_coeff = trainer.cfg.l0l1_coeff * down ** (
                             target_l0 - cache["encoder"].l0
                         )
 
@@ -287,7 +293,7 @@ def train(trainer: SAETrainer, data_source):
         end_resampling,
         # schedule_l0l1,
         schedule_lr,
-        target_l0_with_l1(45, margin=0),
+        target_l0_with_l1(30, margin=0),
         warmup(["lr"], 10_000, 100, 1),
         warmup(["l1_coeff"], 4000, 100, 0.5),
         warmup(["l0l1_coeff"], 5_000, 100, 1),

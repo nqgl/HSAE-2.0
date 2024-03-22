@@ -1,6 +1,6 @@
 from cl_on_data import *
 from deep_selective_undying import trainer
-from stored_acts_buffer import ac_small, ac_mid
+from stored_acts_buffer import ac_small, ac_mid, ac_mid_bf16
 
 # torch.set_default_dtype(torch.float32 if fp32 else torch.bfloat16)
 
@@ -21,7 +21,7 @@ def train_buffer():
 # train(trainer, train_buffer())
 f = True
 try:
-    buf = ac_mid.read_as_iter(legacy_cfg.batch_size)
+    buf = ac_mid_bf16.read_as_iter(legacy_cfg.batch_size)
     next(buf)
     f = False
 except:
@@ -29,8 +29,9 @@ except:
     print("using non-stored data")
     train(trainer, train_buffer())
 assert not f
+print("using stored data")
 train(trainer, buf)
-print("switching to non-stored data")
+print("switching to non-stored data to continue training")
 trainer.train(train_buffer())
 # try:
 #     train(trainer, ac_small.read_as_iter(legacy_cfg.batch_size))

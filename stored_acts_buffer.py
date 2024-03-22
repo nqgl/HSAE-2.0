@@ -18,7 +18,7 @@ DTYPES = {
 class ActsConfig:
     start_percent: Optional[int]
     end_percent: Optional[int]
-    dataset: str = "apollo-research/sae-Skylion007-openwebtext-tokenizer-gpt2"
+    dataset: str = "alancooney/sae-monology-pile-uncopyrighted-tokenizer-gpt2"
     model_name: str = "gpt2-small"
     layer_num: int = 6
     site_name: str = "resid_pre"
@@ -145,14 +145,15 @@ def store_acts(ac: ActsConfig, batch_size=2048, buffer_mult=2048):
     model = get_model(hcfg)
     all_tokens = load_data(
         model,
-        dataset="apollo-research/sae-Skylion007-openwebtext-tokenizer-gpt2",
+        dataset=ac.dataset,
         # dataset="stas/openwebtext-10k",
         name=hcfg.model_name,
         split=f"train[{ac.start_percent}%:{ac.end_percent}%]",
         front_only=False,
+        seq_mul=2,
     )  # .cuda()
     if ac.exclude_bos_acts:
-        from buffer2 import Buffer
+        from data.buffer2 import Buffer
     else:
         from nqgl.sae.training.buffer import Buffer
     buffer = Buffer(hcfg, all_tokens, model)
@@ -186,11 +187,18 @@ ac_small = ActsConfig(
 ac_mid = ActsConfig(
     start_percent=21, end_percent=23, max_chunk_size_mb=1024, buffer_refresh_ratio=0.24
 )
+ac_mid_bf16 = ActsConfig(
+    start_percent=21,
+    end_percent=23,
+    max_chunk_size_mb=1024,
+    buffer_refresh_ratio=0.24,
+    dtype="bf16",
+)
 
 
 def main():
     # ac = ActsConfig(start_percent=0, end_percent=1, max_chunk_size_mb=128)
-    store_acts(ac_mid)
+    store_acts(ac_mid_bf16)
 
 
 if __name__ == "__main__":

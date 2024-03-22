@@ -1,9 +1,5 @@
-from cl_sae import (
-    SAETrainer,
-    SAECacheLayer,
+from sae.cl_sae import (
     SAEComponentLayer,
-    SAEConfig,
-    SAETrainCache,
 )
 from nqgl.mlutils.components import (
     ComponentLayer,
@@ -16,10 +12,13 @@ from nqgl.mlutils.components.component_layer.resampler import (
     ResamplingMethod,
     NoResampling,
 )
-from resamplers import QueuedSVDResampler
+from components.resamplers import QueuedSVDResampler
 from nqgl.mlutils.components.component_layer.freq_tracker import EMAFreqTracker
+from sae.config import SAEConfig, SAETrainCache
+from sae.sae_cachemodule import SAECacheLayer
+from sae.trainer import SAETrainer
 from sae_seq import SequentialCacheLayer, CatSeqCacheLayer
-from resamplers import (
+from components.resamplers import (
     QueuedTopkDiffDecYEncResampler,
     QueuedOrthTopkDiffDecYEncResampler,
 )

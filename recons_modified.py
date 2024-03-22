@@ -7,7 +7,14 @@ from nqgl.sae.training.setup_utils import DTYPES
 
 @torch.no_grad()
 def get_recons_loss(
-    model, encoder, buffer, all_tokens=None, num_batches=5, local_encoder=None, cfg=None
+    model,
+    encoder,
+    buffer,
+    all_tokens=None,
+    num_batches=5,
+    local_encoder=None,
+    cfg=None,
+    bos_processed_with_hook=False,
 ):
     cfg = cfg or encoder.cfg
     if local_encoder is None:
@@ -27,7 +34,12 @@ def get_recons_loss(
             fwd_hooks=[
                 (
                     cfg.act_name,
-                    partial(replacement_hook, encoder=local_encoder, cfg=cfg),
+                    partial(
+                        replacement_hook,
+                        encoder=local_encoder,
+                        cfg=cfg,
+                        bos_processed_with_hook=bos_processed_with_hook,
+                    ),
                 )
             ],
         )
@@ -45,10 +57,15 @@ def get_recons_loss(
     score = (zero_abl_loss - recons_loss) / (zero_abl_loss - loss)
     print(f"{score:.2%}")
     # print(f"{((zero_abl_loss - mean_abl_loss)/(zero_abl_loss - loss)).item():.2%}")
-    return score, loss, recons_loss, zero_abl_loss
+    return {
+        "recons_score": score,
+        "loss": loss,
+        "recons_loss": recons_loss,
+        "zero_ablation_loss": zero_abl_loss,
+    }
 
 
-def replacement_hook(acts, hook, encoder, cfg):
+def replacement_hook(acts, hook, encoder, cfg, bos_processed_with_hook=False):
     acts_shape = acts.shape
     acts_re = acts.reshape(-1, cfg.act_size)
     mlp_post_reconstr = encoder(acts_re.reshape(-1, cfg.act_size))
@@ -56,6 +73,8 @@ def replacement_hook(acts, hook, encoder, cfg):
     mlp_post_reconstr = mlp_post_reconstr.reshape(acts_shape)
     seq_len = acts_shape[1]
     assert seq_len == 128
+    if bos_processed_with_hook:
+        return mlp_post_reconstr
     return torch.cat((acts[:, :1], mlp_post_reconstr[:, 1:]), dim=1)
 
 

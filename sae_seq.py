@@ -1,4 +1,4 @@
-from cl_sae import SAECache, SAEConfig, SAECacheLayer
+from sae.sae_cachemodule import SAECacheLayer
 from nqgl.mlutils.components import ComponentLayer, CacheModule
 import torch
 import torch.nn as nn
@@ -6,6 +6,7 @@ from typing import List
 from dataclasses import dataclass, asdict
 
 from nqgl.mlutils.components.cache import Cache
+from sae.config import SAECache, SAEConfig
 
 
 @dataclass
@@ -142,11 +143,11 @@ class SumSeqCacheLayer(CacheModule):
 def main():
     from cl_on_data import sae_cfg
 
-    SeqSAEsCL(
-        SAEConfig(10, 20),
-        [
-            SAECacheLayer(sae_cfg),
-            SeqSAEWithPrevActs(),
-            SeqSAEWithPrevActs(),
-        ],
-    )
+    # SeqSAEsCL(
+    #     SAEConfig(10, 20),
+    #     [
+    #         SAECacheLayer(sae_cfg),
+    #         SeqSAEWithPrevActs(),
+    #         SeqSAEWithPrevActs(),
+    #     ],
+    # )

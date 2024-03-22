@@ -1,4 +1,4 @@
-from cl_sae import *
+from sae.cl_sae import *
 from nqgl.sae.scripts.train_hsae import (
     # Buffer,
     load_data,
@@ -9,19 +9,28 @@ from nqgl.sae.scripts.train_hsae import (
     ForwardOptions,
     Buffer,
 )
+
+from nqgl.mlutils.components.component_layer.freq_tracker import (
+    CountingFreqTracker,
+    CountingFreqTrackerConfig,
+    EMAFreqTrackerConfig,
+    EMAFreqTracker,
+)
 from recons_modified import get_recons_loss
 
 # from buffer2 import Buffer
 from nqgl.mlutils.components.component_layer.resampler.methods.orth_resampler import (
     OrthRankedTopkResamplingConfig,
 )
-from resamplers import (
+from components.resamplers import (
     QKOrthResampleConfig,
     QueuedSVDResampler,
     QueuedOrthDiffResampler,
     QueuedTopkDiffDecYEncResampler,
     QueuedOrthTopkDiffDecYEncResampler,
 )
+from sae.config import SAEConfig
+from sae.trainer import SAETrainer
 
 fp32 = True
 

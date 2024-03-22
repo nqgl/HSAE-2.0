@@ -1,9 +1,6 @@
-from cl_sae import (
+from sae.cl_sae import (
     SAETrainer,
-    SAECacheLayer,
     SAEComponentLayer,
-    SAEConfig,
-    SAETrainCache,
 )
 from nqgl.mlutils.components import (
     ComponentLayer,
@@ -19,6 +16,8 @@ from nqgl.mlutils.components.component_layer.resampler import (
 
 # from resamplers import QueuedSVDResampler
 from nqgl.mlutils.components.component_layer.freq_tracker import EMAFreqTracker
+from sae.config import SAEConfig, SAETrainCache
+from sae.sae_cachemodule import SAECacheLayer
 from sae_seq import SequentialCacheLayer, CatSeqCacheLayer
 
 from nqgl.mlutils.components.component_layer.resampler.methods.selective_undying import (
@@ -84,31 +83,41 @@ class SelectiveMergedCfg(
 ): ...
 
 
+undying_coeff_mult = 2
 cfg.resampler_cfg = SelectiveMergedCfg(
     **asdict(cfg.resampler_cfg),
     undying_relu=SerializableNonlinearity(
         "undying_relu",
         {
             "k": 1,
-            "l": 0.001,
-            "l_mid_neg": 0.0005,
-            "l_low_pos": 0.0005,
-            "l_low_neg": 0.0002,
+            "l": 0.01 * undying_coeff_mult,
+            "l_mid_neg": 0.005 * undying_coeff_mult,
+            "l_low_pos": 0.005 * undying_coeff_mult,
+            "l_low_neg": 0.002 * undying_coeff_mult,
+            # "l": cfg.resampler_cfg.dead_threshold,
+            # "l_mid_neg": cfg.resampler_cfg.dead_threshold / 2,
+            # "l_low_pos": cfg.resampler_cfg.dead_threshold / 2,
+            # "l_low_neg": cfg.resampler_cfg.dead_threshold / 4,
         },
     ),
-    bias_decay=0.9999,
-    weight_decay=0.99997,
-    # alive_thresh_mul=2,
-    alive_thresh_mul=5,
+    # bias_decay=0.995,
+    grad_for_bias=True,
+    # weight_decay=0.997,
+    grad_to_max_act_decs=False,
+    alive_thresh_mul=4,
     resample_before_step=True,
-    # add_to_max_acts=0.0001,
+    add_to_max_acts=0.0001,
     # max_undying=100,
-    # wait_to_check_dead=5_000,
+    wait_to_check_dead=0,
     # add_softmax_to_acts=True,
     # add_to_max_acts=0.001,
-    undying_sq_ema_reset_ratio=1e-2,
+    reset_new_dead=True,
+    reset_undied=True,
+    undying_sq_ema_reset_ratio=3e1,
+    undying_bias_sq_ema_reset_ratio=3e1,
+    l1_grads_to_undying=0.5,
 )
-cfg.freq_tracker_cfg.decay = 0.99
+# cfg.freq_tracker_cfg.decay = 0.997
 # cfg.resampler_cfg.resample_before_step = True
 # if cfg.resampler_cfg.add_to_max_acts is not None:
 #     cfg.resampler_cfg.alive_thresh_mul += (

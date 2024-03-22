@@ -35,7 +35,7 @@ import wandb
 from dataclasses import dataclass
 from nqgl.mlutils.optimizations.norepr import fastpartial
 from nqgl.mlutils.components.config import WandbDynamicConfig
-from resamplers import QueuedTopkDiffResampler
+from components.resamplers import QueuedTopkDiffResampler
 
 
 @dataclass
