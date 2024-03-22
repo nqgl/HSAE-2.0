@@ -1,6 +1,6 @@
-from cl_on_data import *
-from deep_sae import trainer
-from stored_acts_buffer import ac_small, ac_mid
+from training.cl_on_data import *
+from deep_sae.deep_sae import trainer
+from data.stored_acts_buffer import ac_small, ac_mid
 
 # torch.set_default_dtype(torch.float32 if fp32 else torch.bfloat16)
 

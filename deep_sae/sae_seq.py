@@ -141,7 +141,7 @@ class SumSeqCacheLayer(CacheModule):
 
 
 def main():
-    from cl_on_data import sae_cfg
+    from training.cl_on_data import sae_cfg
 
     # SeqSAEsCL(
     #     SAEConfig(10, 20),

@@ -1,6 +1,6 @@
 # %%
 
-from cl_on_data import *
+from training.cl_on_data import *
 
 weight_params = []
 bias_params = []
@@ -26,7 +26,7 @@ len(sb)
 # %%
 len(sp - sb)
 # %%
-from deep_sae import trainer
+from deep_sae.deep_sae import trainer
 
 # %%
 p = trainer.sae.parameters()

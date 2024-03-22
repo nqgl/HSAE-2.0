@@ -12,22 +12,18 @@ from nqgl.mlutils.components.component_layer.resampler import (
     ResamplingMethod,
     NoResampling,
 )
-
-# from resamplers import QueuedSVDResampler
+from components.resamplers import QueuedSVDResampler
 from nqgl.mlutils.components.component_layer.freq_tracker import EMAFreqTracker
 from sae.config import SAEConfig, SAETrainCache
 from sae.sae_cachemodule import SAECacheLayer
 from sae.trainer import SAETrainer
-from sae_seq import SequentialCacheLayer, CatSeqCacheLayer
-
-from nqgl.mlutils.components.component_layer.resampler.methods.selective_undying import (
-    SelectiveUndyingResamplerConfig,
-    SelectiveUndyingResampler,
-    SerializableNonlinearity,
+from deep_sae.sae_seq import SequentialCacheLayer, CatSeqCacheLayer
+from components.resamplers import (
+    QueuedTopkDiffDecYEncResampler,
+    QueuedOrthTopkDiffDecYEncResampler,
 )
 from unpythonic import box
 import torch.nn as nn
-from dataclasses import dataclass, asdict
 
 
 class L1L0Reader(LayerComponent):
@@ -55,9 +51,29 @@ class L1L0Reader(LayerComponent):
         # cache += cache[)]
 
 
-from cl_on_data import sae_cfg as cfg
+from training.cl_on_data import sae_cfg as cfg
 
 
+# trainer = SAETrainer(
+#     cfg=cfg,
+#     sae=SAEComponentLayer(
+#         cfg=cfg,
+#         sae_cachelayer=SAECacheLayer(
+#             cfg=cfg,
+#             encoder_cachelayer=ComponentLayer(
+#                 cachelayer=SequentialCacheLayer(
+#                     CacheLayer.from_dims(d_in=cfg.d_data, d_out=cfg.d_data * 2),
+#                     CacheLayer.from_dims(d_in=cfg.d_data * 2, d_out=cfg.d_data * 2),
+#                     CacheLayer.from_dims(d_in=cfg.d_data * 2, d_out=cfg.d_dict),
+#                 ),
+#                 components=[L1L0Reader(), freq_tracker, resampler],
+#                 train_cache=SAETrainCache(),
+#                 eval_cache=SAETrainCache(),
+#             ),
+#         ),
+#         components=[],
+#     ),
+# )
 class SeqForSAEAdapter(CacheModule):
     def __init__(self, *modules):
         super().__init__(*modules)
@@ -77,43 +93,19 @@ class SeqForSAE(SeqForSAEAdapter, SequentialCacheLayer): ...
 class CatSeqForSAE(SeqForSAEAdapter, CatSeqCacheLayer): ...
 
 
+# def s
+
+
 fibox = box()
 
-
-@dataclass
-class SelectiveMergedCfg(
-    SelectiveUndyingResamplerConfig, cfg.resampler_cfg.__class__
-): ...
-
-
-cfg.resampler_cfg = SelectiveMergedCfg(
-    **asdict(cfg.resampler_cfg),
-    undying_relu=SerializableNonlinearity(
-        "undying_relu",
-        {
-            "k": 1,
-            "l": 0.1,
-            "l_mid_neg": 0.02,
-            "l_low_pos": 0.05,
-            "l_low_neg": 0.02,
-        },
-    ),
-    bias_decay=0.9999,
-    alive_thresh_mul=10,
-    resample_before_step=True,
-    add_to_max_acts=0.001,
-    undying_sq_ema_reset_ratio=1e-4
-)
-cfg.resampler_cfg.resample_before_step = True
-
-resampler = SelectiveUndyingResampler(
+# resampler = QueuedTopkDiffDecYEncResampler(
+resampler = QueuedOrthTopkDiffDecYEncResampler(
     cfg=cfg.resampler_cfg, get_optim_fn=lambda: fibox.x.optim
 )
 freq_tracker = EMAFreqTracker(cfg=cfg.freq_tracker_cfg)
+MULT_IN = 3
 resampled_layer = ComponentLayer(
-    cachelayer=CacheLayer.from_dims(
-        d_in=cfg.d_data, d_out=cfg.d_dict, nonlinearity=resampler.nonlinearity
-    ),
+    cachelayer=CacheLayer.from_dims(d_in=cfg.d_data * MULT_IN, d_out=cfg.d_dict),
     components=[freq_tracker, resampler],
     train_cache=SAETrainCache(),
     eval_cache=SAETrainCache(),
@@ -128,26 +120,25 @@ trainer = SAETrainer(
         cfg=cfg,
         sae_cachelayer=SAECacheLayer(
             cfg=cfg,
-            encoder=resampled_layer,
-            # ComponentLayer(
-            #     cachelayer=CatSeqForSAE(
-            #         # CacheLayer.from_dims(
-            #         #     d_in=cfg.d_data, d_out=cfg.d_data, nonlinearity=nn.LeakyReLU()
-            #         # ),
-            #         CacheLayer.from_dims(
-            #             d_in=cfg.d_data,
-            #             d_out=cfg.d_data * 2,
-            #             nonlinearity=nn.LeakyReLU(),
-            #         ),
-            #         CacheLayer.from_dims(
-            #             d_in=cfg.d_data * 3,
-            #             d_out=cfg.d_data * (MULT_IN - 1),
-            #             nonlinearity=nn.LeakyReLU(),
-            #         ),
-            #         resampled_layer,
-            #     ),
-            #     components=[L1L0Reader()],
-            # ),
+            encoder=ComponentLayer(
+                cachelayer=CatSeqForSAE(
+                    # CacheLayer.from_dims(
+                    #     d_in=cfg.d_data, d_out=cfg.d_data, nonlinearity=nn.LeakyReLU()
+                    # ),
+                    CacheLayer.from_dims(
+                        d_in=cfg.d_data,
+                        d_out=cfg.d_data * 2,
+                        nonlinearity=nn.LeakyReLU(),
+                    ),
+                    CacheLayer.from_dims(
+                        d_in=cfg.d_data * 3,
+                        d_out=cfg.d_data * (MULT_IN - 1),
+                        nonlinearity=nn.LeakyReLU(),
+                    ),
+                    resampled_layer,
+                ),
+                components=[L1L0Reader()],
+            ),
             # encoder_cachelayer=ComponentLayer(
             #     cachelayer=CacheLayer.from_dims(
             #         d_in=cfg.d_data * 2, d_out=cfg.d_dict

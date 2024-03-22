@@ -1,12 +1,12 @@
-from cl_on_data import *
-from deep_sae import trainer
+from training.cl_on_data import *
+from deep_sae.deep_sae import trainer
 
 
 def main():
     torch.set_default_dtype(torch.float32)
 
     # trainer.sae.cachelayer.zero(1)
-    from stored_acts_buffer import ac
+    from data.stored_acts_buffer import ac
 
     train(trainer, ac.read_as_iter_no_bos(1024))
     # with torch.cuda.amp.autocast():

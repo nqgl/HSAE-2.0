@@ -18,7 +18,7 @@ from nqgl.mlutils.components.component_layer.resampler import (
 from nqgl.mlutils.components.component_layer.freq_tracker import EMAFreqTracker
 from sae.config import SAEConfig, SAETrainCache
 from sae.sae_cachemodule import SAECacheLayer
-from sae_seq import SequentialCacheLayer, CatSeqCacheLayer
+from deep_sae.sae_seq import SequentialCacheLayer, CatSeqCacheLayer
 
 from nqgl.mlutils.components.component_layer.resampler.methods.selective_undying import (
     SelectiveUndyingResamplerConfig,
@@ -55,7 +55,7 @@ class RewriteLastLayerOfSeqToParent(LayerComponent):
         # cache += cache[)]
 
 
-from cl_on_data import sae_cfg as cfg
+from training.cl_on_data import sae_cfg as cfg
 
 
 class SeqForSAEAdapter(CacheModule):

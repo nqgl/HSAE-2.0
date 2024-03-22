@@ -1,6 +1,6 @@
-from cl_on_data import *
+from training.cl_on_data import *
 from _____selective_undying import trainer
-from stored_acts_buffer import ac_small, ac_mid
+from data.stored_acts_buffer import ac_small, ac_mid
 
 # torch.set_default_dtype(torch.float32 if fp32 else torch.bfloat16)
 

@@ -7,18 +7,9 @@ from nqgl.sae.scripts.train_hsae import (
     HierarchicalAutoEncoderConfig,
     SerializableNonlinearity,
     ForwardOptions,
-    Buffer,
 )
-
-from nqgl.mlutils.components.component_layer.freq_tracker import (
-    CountingFreqTracker,
-    CountingFreqTrackerConfig,
-    EMAFreqTrackerConfig,
-    EMAFreqTracker,
-)
-from recons_modified import get_recons_loss
-
-# from buffer2 import Buffer
+from training.recons_modified import get_recons_loss
+from data.buffer2 import Buffer
 from nqgl.mlutils.components.component_layer.resampler.methods.orth_resampler import (
     OrthRankedTopkResamplingConfig,
 )
@@ -31,8 +22,10 @@ from components.resamplers import (
 )
 from sae.config import SAEConfig
 from sae.trainer import SAETrainer
+from nqgl.mlutils.components.component_layer.freq_tracker import EMAFreqTracker
 
-fp32 = True
+fp32 = False
+torch.set_default_dtype(torch.float32 if fp32 else torch.bfloat16)
 
 legacy_cfg = HierarchicalAutoEncoderConfig(
     site="resid_pre",
@@ -41,8 +34,8 @@ legacy_cfg = HierarchicalAutoEncoderConfig(
     layer=6,
     gram_shmidt_trail=512,
     batch_size=1024,
-    buffer_mult=4096,
-    buffer_refresh_ratio=0.4,
+    buffer_mult=2048,
+    buffer_refresh_ratio=0.48,
     flatten_heads=False,
     buffer_dtype="bf16" if not fp32 else "fp32",
     enc_dtype="bf16" if not fp32 else "fp32",
@@ -53,42 +46,45 @@ legacy_cfg = HierarchicalAutoEncoderConfig(
 # Actual configs
 device = "cuda"
 batch_size = legacy_cfg.batch_size
-dict_mult = 32
+dict_mult = 16
 sae_cfg = SAEConfig(
-    lr=7e-4,
-    betas=(0.8, 0.995),
+    lr=1e-3,
+    betas=(0.8, 0.99),
     d_data=768,
     d_dict=int(768 * dict_mult),
+    batch_size=batch_size,
     resampler_cfg=QKOrthResampleConfig(
-        dead_threshold=3e-6,
+        dead_threshold=1e-6,
         # dead_threshold=1 / (768 * dict_mult) / 300,
         min_viable_count=4_000 * batch_size,
         reset_all_freqs_interval=10_000,
         reset_all_freqs_offset=5_000,
-        check_frequency=1000,
+        check_frequency=500,
         resample_frequency=64,
         num_to_resample=16,
         resample_top_k=32,
         normalized_encoder_multiplier=0.003,
-        resampling_cycle=(12000, 12000),
+        resampling_cycle=(10000, 20000),
         append_to_queue=False,
         # gram_schmidt_trail=,
         negative_bias_multiplier=20,
-        sq_ema_reset_ratio=3e-1,
+        sq_ema_reset_ratio=1,
         bias_sq_ema_reset_ratio=1,
     ),
-    freq_tracker_cfg=FreqTrackerCombinedConfig(decay=0.9994, initial_freq_value=1e-5),
+    freq_tracker_cfg=FreqTrackerCombinedConfig(decay=0.99, initial_freq_value=3e-5),
     device=device,
-    optim="adam",
+    optim="nadam",
     b_enc_init=-3,
     start_from_dead=False,
-    bias_lr_coeff=1,
+    bias_lr_coeff=3,
     # l2_loss_type="l2_norm",
     # l2_loss_type=["l2_norm_squared/40", "l2_norm", "l2_root"],
-    l2_loss_type=["l2_norm_squared/40", "squared/40", "l2_norm"],
+    # l2_loss_type=["l2_norm_squared/40", "squared/40", "l2_norm"],
+    l2_loss_type="squared/40",
+    # l2_loss_type="l2_norm_squared/40",
     # l1_coeff=1 / (10),
     l1_coeff=1 / (10),
-    l0l1_coeff=None,
+    l0l1_coeff=1 / 10000,
     l0l1_thresh=20,
 )
 
@@ -103,24 +99,42 @@ trainer = SAETrainer(
     freq_tracker_factory=EMAFreqTracker,
 )
 
+dataset = "apollo-research/sae-Skylion007-openwebtext-tokenizer-gpt2"
+dataset = "monology/pile-uncopyrighted"
+dataset = "alancooney/sae-monology-pile-uncopyrighted-tokenizer-gpt2"
+seq_mul = 2
 # Data
+from typing import Tuple
+
+
+@dataclass
+class TrainConfig:
+    dataset_name: str
+    train_split: Tuple[int, int]
+    val_split: Tuple[int, int]
+    test_split: Tuple[int, int]
+
+
 model = get_model(legacy_cfg)
 train_percent = 5
+train_start = 5
 all_tokens = load_data(
     model,
-    dataset="apollo-research/sae-Skylion007-openwebtext-tokenizer-gpt2",
+    dataset=dataset,
     name=legacy_cfg.model_name,
-    split=f"train[10%:{10+train_percent}%]",
+    split=f"train[{train_start}%:{train_start+train_percent}%]",
     front_only=False,
     seq_len=128,
+    seq_mul=seq_mul,
 )  # .cuda()
 val_tokens = load_data(
     model,
-    dataset="apollo-research/sae-Skylion007-openwebtext-tokenizer-gpt2",
+    dataset=dataset,
     name=legacy_cfg.model_name,
     split=f"train[90%:91%]",
     front_only=False,
     seq_len=128,
+    seq_mul=seq_mul,
 )  # .cuda()
 
 
@@ -147,40 +161,53 @@ def train(trainer: SAETrainer, data_source):
         # if trainer.t == 2001:
         #     trainer.sae.cachelayer.zero(1e-9)
 
-    def warmup(cache):
-        T = 10000
-        m = 100
-        v = (T // m) ** 2
-        if trainer.t == 1:
-            trainer.cfg.l1_coeff /= v**0.5
-            trainer.cfg.lr /= v
-            trainer.update_optim_lrs()
-            if trainer.cfg.l0l1_coeff is not None:
-                trainer.cfg.l0l1_coeff /= v
-        elif trainer.t < T and trainer.t % m == 1:
-            i = trainer.t // m
-            mul = ((i + 1) / i) ** 2
-            trainer.cfg.l1_coeff *= mul**0.5
-            trainer.cfg.lr *= mul
-            trainer.update_optim_lrs()
+    def warmup(params=["lr"], T=10_000, m=100, exp=1, delay=0):
+        def warmup(cache):
+            v = (T // m) ** 2
+            t = trainer.t - delay
+            for param in params:
+                if trainer.t == 1:
+                    setattr(trainer.cfg, param, getattr(trainer.cfg, param) / (v**exp))
+                    if param == "lr":
+                        trainer.update_optim_lrs()
+                elif t < T and t % m == 1 and trainer.t > delay:
+                    i = t // m
+                    mul = ((i + 1) / i) ** 2
+                    setattr(
+                        trainer.cfg, param, getattr(trainer.cfg, param) * (mul**exp)
+                    )
+                    if param == "lr":
+                        trainer.update_optim_lrs()
 
-            if trainer.cfg.l0l1_coeff is not None:
-                trainer.cfg.l0l1_coeff *= mul
+        return warmup
 
     def schedule_lr(cache):
         # return
-        if (trainer.t + 3000) % 30000 == 0 and trainer.t > 5000:
-            trainer.cfg.lr = max(trainer.cfg.lr * (1 / 3), 3e-5)
+        if (trainer.t + 7000) % 35000 == 0 and trainer.t > 9000:
+            trainer.cfg.lr = max(trainer.cfg.lr * (1 / 2), 3e-5)
             # trainer.init_optim()
             trainer.update_optim_lrs()
 
-    def target_l0_with_l1(target_l0, margin=1):
+    def target_l0_with_l1(target_l0, margin=1, start_t=10_000, up=1.0001, down=0.9998):
         def callback(cache):
-            if trainer.t >= 10000 and trainer.t % 100 == 0:
+            if trainer.t >= start_t and trainer.t % 100 == 0:
                 if cache["encoder"].l0 > target_l0 + margin:
-                    trainer.cfg.l1_coeff = trainer.cfg.l1_coeff * 1.0002
+                    trainer.cfg.l1_coeff = (
+                        trainer.cfg.l1_coeff
+                        * up ** (cache["encoder"].l0 - target_l0).item()
+                    )
+                    if trainer.cfg.l0l1_coeff is not None:
+                        trainer.cfg.l0l1_coeff = trainer.cfg.l0l1_coeff * up ** (
+                            cache["encoder"].l0 - target_l0
+                        )
                 elif cache["encoder"].l0 < target_l0 - margin:
-                    trainer.cfg.l1_coeff = trainer.cfg.l1_coeff * 0.9998
+                    trainer.cfg.l1_coeff = trainer.cfg.l1_coeff * down ** (
+                        target_l0 - cache["encoder"].l0
+                    )
+                    if trainer.cfg.l0l1_coeff is not None:
+                        trainer.cfg.l0l1_coeff = trainer.cfg.l0l1_coeff * down ** (
+                            target_l0 - cache["encoder"].l0
+                        )
 
         return callback
 
@@ -211,17 +238,38 @@ def train(trainer: SAETrainer, data_source):
         if trainer.t % 1000 == 0:
             wandb.log(
                 {
-                    "num_steps": trainer.t,
-                    "recons_score": get_recons_loss(
+                    **{
+                        "num_steps": trainer.t,
+                    },
+                    **{
+                        ("recons/" + k): v
+                        for k, v in get_recons_loss(
+                            model,
+                            trainer.sae,
+                            buffer=None,
+                            all_tokens=val_tokens,
+                            cfg=legacy_cfg,
+                        ).items()
+                    },
+                },
+                step=trainer.t,
+            )
+        if trainer.t % 5000 == 0:
+            wandb.log(
+                {
+                    ("recons/with_proc_bos/" + k): v
+                    for k, v in get_recons_loss(
                         model,
                         trainer.sae,
                         buffer=None,
                         all_tokens=val_tokens,
                         cfg=legacy_cfg,
-                    )[0],
+                        bos_processed_with_hook=True,
+                    ).items()
                 },
                 step=trainer.t,
             )
+
             # y_norms = cache.y.norm(dim=-1)
             # x_norms = cache["encoder"].x.norm(dim=-1)
             # wandb.log(
@@ -245,8 +293,10 @@ def train(trainer: SAETrainer, data_source):
         end_resampling,
         # schedule_l0l1,
         schedule_lr,
-        target_l0_with_l1(40),
-        warmup,
+        target_l0_with_l1(30, margin=0),
+        warmup(["lr"], 10_000, 100, 1),
+        warmup(["l1_coeff"], 4000, 100, 0.5),
+        warmup(["l0l1_coeff"], 5_000, 100, 1),
     ]
 
     trainer.train(data_source)
